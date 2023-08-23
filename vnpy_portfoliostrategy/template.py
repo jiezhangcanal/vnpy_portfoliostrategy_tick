@@ -133,21 +133,21 @@ class StrategyTemplate(ABC):
         if not order.is_active() and order.vt_orderid in self.active_orderids:
             self.active_orderids.remove(order.vt_orderid)
 
-    def buy(self, vt_symbol: str, price: float, volume: float, lock: bool = False, net: bool = False) -> List[str]:
+    def buy(self, vt_symbol: str, price: float, volume: float, lock: bool = False, net: bool = False, limit: bool = True,) -> List[str]:
         """买入开仓"""
-        return self.send_order(vt_symbol, Direction.LONG, Offset.OPEN, price, volume, lock, net)
+        return self.send_order(vt_symbol, Direction.LONG, Offset.OPEN, price, volume, lock, net, limit)
 
-    def sell(self, vt_symbol: str, price: float, volume: float, lock: bool = False, net: bool = False) -> List[str]:
+    def sell(self, vt_symbol: str, price: float, volume: float, lock: bool = False, net: bool = False, limit: bool = True,) -> List[str]:
         """卖出平仓"""
-        return self.send_order(vt_symbol, Direction.SHORT, Offset.CLOSE, price, volume, lock, net)
+        return self.send_order(vt_symbol, Direction.SHORT, Offset.CLOSE, price, volume, lock, net, limit)
 
-    def short(self, vt_symbol: str, price: float, volume: float, lock: bool = False, net: bool = False) -> List[str]:
+    def short(self, vt_symbol: str, price: float, volume: float, lock: bool = False, net: bool = False, limit: bool = True,) -> List[str]:
         """卖出开仓"""
-        return self.send_order(vt_symbol, Direction.SHORT, Offset.OPEN, price, volume, lock, net)
+        return self.send_order(vt_symbol, Direction.SHORT, Offset.OPEN, price, volume, lock, net, limit)
 
-    def cover(self, vt_symbol: str, price: float, volume: float, lock: bool = False, net: bool = False) -> List[str]:
+    def cover(self, vt_symbol: str, price: float, volume: float, lock: bool = False, net: bool = False, limit: bool = True,) -> List[str]:
         """买入平仓"""
-        return self.send_order(vt_symbol, Direction.LONG, Offset.CLOSE, price, volume, lock, net)
+        return self.send_order(vt_symbol, Direction.LONG, Offset.CLOSE, price, volume, lock, net, limit)
 
     def send_order(
         self,
@@ -158,11 +158,12 @@ class StrategyTemplate(ABC):
         volume: float,
         lock: bool = False,
         net: bool = False,
+        limit: bool = True,
     ) -> List[str]:
         """发送委托"""
         if self.trading:
             vt_orderids: list = self.strategy_engine.send_order(
-                self, vt_symbol, direction, offset, price, volume, lock, net
+                self, vt_symbol, direction, offset, price, volume, lock, net, limit
             )
 
             for vt_orderid in vt_orderids:

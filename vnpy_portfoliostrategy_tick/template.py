@@ -7,7 +7,7 @@ from vnpy.trader.constant import Interval, Direction, Offset
 from vnpy.trader.object import BarData, TickData, OrderData, TradeData
 from vnpy.trader.utility import virtual
 
-from .base import EngineType
+from .base import EngineType, BacktestingMode
 
 if TYPE_CHECKING:
     from .engine import StrategyEngine
@@ -19,6 +19,7 @@ class StrategyTemplate(ABC):
     author: str = ""
     parameters: list = []
     variables: list = []
+    settings: list = ['limit', 'mode']
 
     def __init__(
         self,
@@ -35,6 +36,9 @@ class StrategyTemplate(ABC):
         # 状态控制变量
         self.inited: bool = False
         self.trading: bool = False
+        self.limit: bool = True
+        self.mode: BacktestingMode = BacktestingMode.BAR
+        self.close_price_tick = {}
 
         # 持仓数据字典
         self.pos_data: Dict[str, int] = defaultdict(int)        # 实际持仓
@@ -57,6 +61,9 @@ class StrategyTemplate(ABC):
     def update_setting(self, setting: dict) -> None:
         """设置策略参数"""
         for name in self.parameters:
+            if name in setting:
+                setattr(self, name, setting[name])
+        for name in self.settings:
             if name in setting:
                 setattr(self, name, setting[name])
 
@@ -113,6 +120,11 @@ class StrategyTemplate(ABC):
     def on_tick(self, tick: TickData) -> None:
         """行情推送回调"""
         pass
+    
+    @virtual
+    def on_tick_9999(self, tick: TickData) -> None:
+        """行情推送回调"""
+        self.close_price_tick[tick.vt_symbol] = tick.last_price
 
     @virtual
     def on_bars(self, bars: Dict[str, BarData]) -> None:
@@ -133,21 +145,21 @@ class StrategyTemplate(ABC):
         if not order.is_active() and order.vt_orderid in self.active_orderids:
             self.active_orderids.remove(order.vt_orderid)
 
-    def buy(self, vt_symbol: str, price: float, volume: float, lock: bool = False, net: bool = False, limit: bool = True,) -> List[str]:
+    def buy(self, vt_symbol: str, price: float, volume: float, lock: bool = False, net: bool = False) -> List[str]:
         """买入开仓"""
-        return self.send_order(vt_symbol, Direction.LONG, Offset.OPEN, price, volume, lock, net, limit)
+        return self.send_order(vt_symbol, Direction.LONG, Offset.OPEN, price, volume, lock, net)
 
-    def sell(self, vt_symbol: str, price: float, volume: float, lock: bool = False, net: bool = False, limit: bool = True,) -> List[str]:
+    def sell(self, vt_symbol: str, price: float, volume: float, lock: bool = False, net: bool = False) -> List[str]:
         """卖出平仓"""
-        return self.send_order(vt_symbol, Direction.SHORT, Offset.CLOSE, price, volume, lock, net, limit)
+        return self.send_order(vt_symbol, Direction.SHORT, Offset.CLOSE, price, volume, lock, net)
 
-    def short(self, vt_symbol: str, price: float, volume: float, lock: bool = False, net: bool = False, limit: bool = True,) -> List[str]:
+    def short(self, vt_symbol: str, price: float, volume: float, lock: bool = False, net: bool = False) -> List[str]:
         """卖出开仓"""
-        return self.send_order(vt_symbol, Direction.SHORT, Offset.OPEN, price, volume, lock, net, limit)
+        return self.send_order(vt_symbol, Direction.SHORT, Offset.OPEN, price, volume, lock, net)
 
-    def cover(self, vt_symbol: str, price: float, volume: float, lock: bool = False, net: bool = False, limit: bool = True,) -> List[str]:
+    def cover(self, vt_symbol: str, price: float, volume: float, lock: bool = False, net: bool = False) -> List[str]:
         """买入平仓"""
-        return self.send_order(vt_symbol, Direction.LONG, Offset.CLOSE, price, volume, lock, net, limit)
+        return self.send_order(vt_symbol, Direction.LONG, Offset.CLOSE, price, volume, lock, net)
 
     def send_order(
         self,
@@ -158,12 +170,11 @@ class StrategyTemplate(ABC):
         volume: float,
         lock: bool = False,
         net: bool = False,
-        limit: bool = True,
     ) -> List[str]:
         """发送委托"""
         if self.trading:
             vt_orderids: list = self.strategy_engine.send_order(
-                self, vt_symbol, direction, offset, price, volume, lock, net, limit
+                self, vt_symbol, direction, offset, price, volume, lock, net, self.limit
             )
 
             for vt_orderid in vt_orderids:
@@ -265,7 +276,12 @@ class StrategyTemplate(ABC):
         reference: float
     ) -> float:
         """计算调仓委托价格（支持按需重载实现）"""
-        return reference
+        print(f"calculate_price:{self.mode}")
+        if self.mode == BacktestingMode.BAR:
+            return reference
+        else:
+            vt_symbol = vt_symbol.replace("8888", "9999")
+            return self.close_price_tick[vt_symbol]
 
     def get_order(self, vt_orderid: str) -> Optional[OrderData]:
         """查询委托数据"""

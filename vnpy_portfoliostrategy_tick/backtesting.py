@@ -42,6 +42,8 @@ class BacktestingEngine:
     def __init__(self) -> None:
         """构造函数"""
         self.vt_symbols: List[str] = []
+        self.vt_symbols_bar_tick: Dict[str, str] = {}
+        self.vt_symbols_tick_bar: Dict[str, str] = {}
         self.start: datetime = None
         self.end: datetime = None
 
@@ -63,7 +65,9 @@ class BacktestingEngine:
         self.interval: Interval = None
         self.days: int = 0
         self.history_data: Dict[Tuple, BarData] = {}
+        self.history_data_tick: Dict[Tuple, BarData] = {}
         self.dts: Set[datetime] = set()
+        self.dts_tick: Set[datetime] = set()
 
         self.limit_order_count: int = 0
         self.limit_orders: Dict[str, OrderData] = {}
@@ -80,7 +84,7 @@ class BacktestingEngine:
 
         self.daily_results: Dict[date, PortfolioDailyResult] = {}
         self.daily_df: DataFrame = None
-        self.pbg: PortfolioBarGenerator = None
+        # self.pbg: PortfolioBarGenerator = None
 
     def clear_data(self) -> None:
         """清理上次回测缓存数据"""
@@ -103,7 +107,11 @@ class BacktestingEngine:
         self.logs.clear()
         self.daily_results.clear()
         self.daily_df = None
-        self.pbg = None
+        # self.pbg = None
+        self.history_data.clear()
+        self.dts.clear()
+        self.history_data = {}
+        self.history_data_tick = {}
 
     def set_parameters(
         self,
@@ -122,6 +130,12 @@ class BacktestingEngine:
         """设置参数"""
         self.mode = mode
         self.vt_symbols = vt_symbols
+        for vt_symbol in self.vt_symbols:
+            symbol, exchange = extract_vt_symbol(vt_symbol)
+            vt_symbol_tick = symbol[:-4] + "9999." + exchange.value
+            self.vt_symbols_bar_tick[vt_symbol] = vt_symbol_tick
+            self.vt_symbols_tick_bar[vt_symbol_tick] = vt_symbol
+
         self.interval = interval
 
         self.rates = rates
@@ -140,7 +154,7 @@ class BacktestingEngine:
         self.strategy = strategy_class(
             self, strategy_class.__name__, copy(self.vt_symbols), setting
         )
-        self.pbg = PortfolioBarGenerator(self.strategy.on_bars)
+        # self.pbg = PortfolioBarGenerator(self.strategy.on_bars)
 
     def load_data(self) -> None:
         """加载历史数据"""
@@ -156,58 +170,60 @@ class BacktestingEngine:
         # 清理上次加载的历史数据
         self.history_data.clear()
         self.dts.clear()
+        self.history_data_tick.clear()
+        self.dts_tick.clear()
 
         # 每次加载30天历史数据
         progress_delta: timedelta = timedelta(days=30)
         total_delta: timedelta = self.end - self.start
         interval_delta: timedelta = INTERVAL_DELTA_MAP[self.interval]
 
-        if self.mode == BacktestingMode.BAR:
-            for vt_symbol in self.vt_symbols:
-                if self.interval == Interval.MINUTE:
-                    start: datetime = self.start
-                    end: datetime = self.start + progress_delta
-                    progress = 0
+        for vt_symbol in self.vt_symbols:
+            if self.interval == Interval.MINUTE:
+                start: datetime = self.start
+                end: datetime = self.start + progress_delta
+                progress = 0
 
-                    data_count = 0
-                    while start < self.end:
-                        end = min(end, self.end)
-                        data: List[BarData] = load_bar_data(
-                            vt_symbol,
-                            self.interval,
-                            start,
-                            end
-                        )
-
-                        for bar in data:
-                            self.dts.add(bar.datetime)
-                            self.history_data[(bar.datetime, vt_symbol)] = bar
-                            data_count += 1
-
-                        progress += progress_delta / total_delta
-                        progress = min(progress, 1)
-                        progress_bar = "#" * int(progress * 10)
-                        self.output(f"{vt_symbol}加载进度：{progress_bar} [{progress:.0%}]")
-
-                        start = end + interval_delta
-                        end += (progress_delta + interval_delta)
-                else:
+                data_count = 0
+                while start < self.end:
+                    end = min(end, self.end)
                     data: List[BarData] = load_bar_data(
                         vt_symbol,
                         self.interval,
-                        self.start,
-                        self.end
+                        start,
+                        end
                     )
 
                     for bar in data:
                         self.dts.add(bar.datetime)
                         self.history_data[(bar.datetime, vt_symbol)] = bar
+                        data_count += 1
 
-                    data_count = len(data)
+                    progress += progress_delta / total_delta
+                    progress = min(progress, 1)
+                    progress_bar = "#" * int(progress * 10)
+                    self.output(f"{vt_symbol}加载bar进度：{progress_bar} [{progress:.0%}]")
 
-                self.output(f"{vt_symbol}历史数据加载完成，数据量：{data_count}")
-        else:
+                    start = end + interval_delta
+                    end += (progress_delta + interval_delta)
+            else:
+                data: List[BarData] = load_bar_data(
+                    vt_symbol,
+                    self.interval,
+                    self.start,
+                    self.end
+                )
+
+                for bar in data:
+                    self.dts.add(bar.datetime)
+                    self.history_data[(bar.datetime, vt_symbol)] = bar
+
+                data_count = len(data)
+
+            self.output(f"{vt_symbol}历史bar数据加载完成，数据量：{data_count}")
+        if self.mode == BacktestingMode.TICK:
             for vt_symbol in self.vt_symbols:
+                vt_symbol_tick = self.vt_symbols_bar_tick[vt_symbol]
                 start: datetime = self.start
                 end: datetime = self.start + progress_delta
                 progress = 0
@@ -216,53 +232,68 @@ class BacktestingEngine:
                 while start < self.end:
                     end = min(end, self.end)
                     data: List[TickData] = load_tick_data(
-                        vt_symbol,
+                        vt_symbol_tick,
                         start,
                         end
                     )
 
                     for tick in data:
-                        self.dts.add(tick.datetime)
-                        self.history_data[(tick.datetime, vt_symbol)] = tick
+                        self.dts_tick.add(tick.datetime)
+                        self.history_data_tick[(tick.datetime, vt_symbol)] = tick
                         data_count += 1
 
                     progress += progress_delta / total_delta
                     progress = min(progress, 1)
                     progress_bar = "#" * int(progress * 10)
-                    self.output(f"{vt_symbol}加载进度：{progress_bar} [{progress:.0%}]")
+                    self.output(f"{vt_symbol}加载tick进度：{progress_bar} [{progress:.0%}]")
 
                     start = end + interval_delta
                     end += (progress_delta + interval_delta)
+                self.output(f"{vt_symbol}历史tick数据加载完成，数据量：{data_count}")
         self.output("所有历史数据加载完成")
 
     def run_backtesting(self) -> None:
         """开始回测"""
-        if self.mode == BacktestingMode.BAR:
-            func = self.new_bars
-        else:
-            func = self.new_ticks
         
         self.strategy.on_init()
 
         dts: list = list(self.dts)
         dts.sort()
+        dts_tick: list = list(self.dts_tick)
+        dts_tick.sort()
 
         # 使用指定时间的历史数据初始化策略
         day_count: int = 0
         ix: int = 0
+        ix_tick: int = 0
+        if self.mode == BacktestingMode.BAR:
+            for ix, dt in enumerate(dts):
+                if self.datetime and dt.day != self.datetime.day:
+                    day_count += 1
+                    if day_count >= self.days:
+                        break
 
-        for ix, dt in enumerate(dts):
-            if self.datetime and dt.day != self.datetime.day:
-                day_count += 1
-                if day_count >= self.days:
-                    break
-
-            try:
-                func(dt)
-            except Exception:
-                self.output("触发异常，回测终止")
-                self.output(traceback.format_exc())
-                return
+                try:
+                    self.new_bars(dt)
+                except Exception:
+                    self.output("触发异常，回测终止")
+                    self.output(traceback.format_exc())
+                    return
+        else:
+            while ix < len(dts) and ix_tick < len(dts_tick):
+                dt = dts[ix]
+                dt_tick = dts_tick[ix_tick]
+                if self.datetime and dt.day != self.datetime.day:
+                    day_count += 1
+                    if day_count >= self.days:
+                        break
+                if dt.timestamp() <= dt_tick.timestamp():
+                    self.new_bars(dt)
+                    ix += 1
+                else:
+                    self.new_ticks(dt_tick)
+                    ix_tick += 1
+        
 
         self.strategy.inited = True
         self.output("策略初始化完成")
@@ -270,16 +301,33 @@ class BacktestingEngine:
         self.strategy.on_start()
         self.strategy.trading = True
         self.output("开始回放历史数据")
-        print(dts.__len__())
-        print(ix)
         # 使用剩余历史数据进行策略回测
-        for dt in dts[ix:]:
-            try:
-                func(dt)
-            except Exception:
-                self.output("触发异常，回测终止")
-                self.output(traceback.format_exc())
-                return
+        if self.mode == BacktestingMode.BAR:
+            for dt in dts[ix:]:
+                try:
+                    self.new_bars(dt)
+                except Exception:
+                    self.output("触发异常，回测终止")
+                    self.output(traceback.format_exc())
+                    return
+        else:
+            while ix < len(dts) and ix_tick < len(dts_tick):
+                dt = dts[ix]
+                dt_tick = dts_tick[ix_tick]
+                if dt.timestamp() <= dt_tick.timestamp():
+                    self.new_bars(dt)
+                    ix += 1
+                else:
+                    self.new_ticks(dt_tick)
+                    ix_tick += 1
+            while ix < len(dts):
+                dt = dts[ix]
+                self.new_bars(dt)
+                ix += 1
+            while ix_tick < len(dts_tick):
+                dt_tick = dts_tick[ix_tick]
+                self.new_ticks(dt_tick)
+                ix_tick += 1
 
         self.output("历史数据回放结束")
 
@@ -603,14 +651,16 @@ class BacktestingEngine:
 
         close_prices: dict = {}
         for tick in ticks.values():
-            close_prices[tick.vt_symbol] = tick.last_price
+            vt_symbol = self.vt_symbols_tick_bar[tick.vt_symbol]
+            close_prices[vt_symbol] = tick.last_price
 
         daily_result: Optional[PortfolioDailyResult] = self.daily_results.get(d, None)
         
         if daily_result:
             ori = daily_result.close_prices
             for tick in ticks.values():
-                ori[tick.vt_symbol] = tick.last_price
+                vt_symbol = self.vt_symbols_tick_bar[tick.vt_symbol]
+                ori[vt_symbol] = tick.last_price
             daily_result.update_close_prices(ori)
         else:
             self.daily_results[d] = PortfolioDailyResult(d, close_prices)
@@ -644,19 +694,23 @@ class BacktestingEngine:
                     gateway_name=old_bar.gateway_name
                 )
                 self.bars[vt_symbol] = bar
+        
+        if self.mode == BacktestingMode.BAR:
+            self.cross_limit_order()
+            self.cross_market_order()
+            self.strategy.on_bars(bars)
 
-        self.cross_limit_order()
-        self.strategy.on_bars(bars)
-
-        if self.strategy.inited:
-            self.update_daily_close(self.bars, dt)
+            if self.strategy.inited:
+                self.update_daily_close(self.bars, dt)
+        else:
+            self.strategy.on_bars(bars)
 
     def new_ticks(self, dt: datetime) -> None:
         """历史数据推送"""
         self.datetime = dt
         ticks: Dict[str, TickData] = {}
         for vt_symbol in self.vt_symbols:
-            tick: Optional[TickData] = self.history_data.get((dt, vt_symbol), None)
+            tick: Optional[TickData] = self.history_data_tick.get((dt, vt_symbol), None)
             if tick:
                 self.ticks[vt_symbol] = tick
                 ticks[vt_symbol] = tick
@@ -665,8 +719,8 @@ class BacktestingEngine:
         self.cross_market_order()
         for tick in ticks.values():
             self.strategy.on_tick(tick)
-            self.pbg.update_tick(tick)
-
+            self.strategy.on_tick_9999(tick)
+            # self.pbg.update_tick(tick)
         if self.strategy.inited:
             self.update_tick_daily_close(ticks, dt)
 

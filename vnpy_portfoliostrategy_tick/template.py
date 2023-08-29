@@ -7,7 +7,7 @@ from vnpy.trader.constant import Interval, Direction, Offset
 from vnpy.trader.object import BarData, TickData, OrderData, TradeData
 from vnpy.trader.utility import virtual
 
-from .base import EngineType, BacktestingMode
+from .base import EngineType, BacktestingMode, LimitType
 
 if TYPE_CHECKING:
     from .engine import StrategyEngine
@@ -19,7 +19,7 @@ class StrategyTemplate(ABC):
     author: str = ""
     parameters: list = []
     variables: list = []
-    settings: list = ['limit', 'mode']
+    settings: list = ['limit', 'mode', 'limit_type']
 
     def __init__(
         self,
@@ -37,8 +37,19 @@ class StrategyTemplate(ABC):
         self.inited: bool = False
         self.trading: bool = False
         self.limit: bool = True
+        self.limit_type : LimitType = LimitType.LAST
         self.mode: BacktestingMode = BacktestingMode.BAR
         self.close_price_tick = {}
+        self.bid_price_1_tick = {}
+        self.ask_price_1_tick = {}
+        self.bid_price_2_tick = {}
+        self.ask_price_2_tick = {}
+        self.bid_price_3_tick = {}
+        self.ask_price_3_tick = {}
+        self.bid_price_4_tick = {}
+        self.ask_price_4_tick = {}
+        self.bid_price_5_tick = {}
+        self.ask_price_5_tick = {}
 
         # 持仓数据字典
         self.pos_data: Dict[str, int] = defaultdict(int)        # 实际持仓
@@ -125,6 +136,17 @@ class StrategyTemplate(ABC):
     def on_tick_9999(self, tick: TickData) -> None:
         """行情推送回调"""
         self.close_price_tick[tick.vt_symbol] = tick.last_price
+        self.bid_price_1_tick[tick.vt_symbol] = tick.bid_price_1
+        self.ask_price_1_tick[tick.vt_symbol] = tick.ask_price_1
+        self.bid_price_2_tick[tick.vt_symbol] = tick.bid_price_2
+        self.ask_price_2_tick[tick.vt_symbol] = tick.ask_price_2
+        self.bid_price_3_tick[tick.vt_symbol] = tick.bid_price_3
+        self.ask_price_3_tick[tick.vt_symbol] = tick.ask_price_3
+        self.bid_price_4_tick[tick.vt_symbol] = tick.bid_price_4
+        self.ask_price_4_tick[tick.vt_symbol] = tick.ask_price_4
+        self.bid_price_5_tick[tick.vt_symbol] = tick.bid_price_5
+        self.ask_price_5_tick[tick.vt_symbol] = tick.ask_price_5
+
 
     @virtual
     def on_bars(self, bars: Dict[str, BarData]) -> None:
@@ -281,7 +303,92 @@ class StrategyTemplate(ABC):
             return reference
         else:
             vt_symbol = vt_symbol.replace("8888", "9999")
-            return self.close_price_tick[vt_symbol]
+            if self.limit_type == LimitType.LAST:
+                return self.close_price_tick[vt_symbol]
+            else:
+                if self.limit_type == LimitType.BIDASK1:
+                    if direction == Direction.LONG:
+                        return self.bid_price_1_tick[vt_symbol]
+                    else:
+                        return self.ask_price_1_tick[vt_symbol]
+                elif self.limit_type == LimitType.BIDASK2:
+                    if direction == Direction.LONG:
+                        return self.get_bid_price_tick(vt_symbol, 2)
+                    else:
+                        return self.get_ask_price_tick(vt_symbol, 2)
+                elif self.limit_type == LimitType.BIDASK3:
+                    if direction == Direction.LONG:
+                        return self.get_bid_price_tick(vt_symbol, 3)
+                    else:
+                        return self.get_ask_price_tick(vt_symbol, 3)
+                elif self.limit_type == LimitType.BIDASK4:
+                    if direction == Direction.LONG:
+                        return self.get_bid_price_tick(vt_symbol, 4)
+                    else:
+                        return self.get_ask_price_tick(vt_symbol, 4)
+                elif self.limit_type == LimitType.BIDASK5:
+                    if direction == Direction.LONG:
+                        return self.get_bid_price_tick(vt_symbol, 5)
+                    else:
+                        return self.get_ask_price_tick(vt_symbol, 5)
+    
+    def get_bid_price_tick(self, vt_symbol: str, level: int) -> float:
+        price = self.get_original_bid_ask_price_tick(True, vt_symbol, level)
+        if price is not None and price > 0:
+            return price
+        step = max(self.get_pricetick(vt_symbol.replace("9999", "8888")), (self.ask_price_1_tick[vt_symbol] - self.bid_price_1_tick[vt_symbol])/2)
+        step_count = 1
+        level -= 1
+        while level > 1:
+            price = self.get_original_bid_ask_price_tick(True, vt_symbol, level)
+            if price is not None and price > 0:
+                level -= 1
+                step_count += 1
+            else:
+                break
+        return self.get_original_bid_ask_price_tick(True, vt_symbol, level) - step * step_count
+
+    def get_ask_price_tick(self, vt_symbol: str, level: int) -> float:
+        price = self.get_original_bid_ask_price_tick(False, vt_symbol, level)
+        if price is not None and price > 0:
+            return price
+        step = max(self.get_pricetick(vt_symbol.replace("9999", "8888")), (self.ask_price_1_tick[vt_symbol] - self.bid_price_1_tick[vt_symbol])/2)
+        step_count = 1
+        level -= 1
+        while level > 1:
+            price = self.get_original_bid_ask_price_tick(False, vt_symbol, level)
+            if price is not None and price > 0:
+                level -= 1
+                step_count += 1
+            else:
+                break
+        return self.get_original_bid_ask_price_tick(False, vt_symbol, level) + step * step_count
+
+    
+    def get_original_bid_ask_price_tick(self, bid, vt_symbol: str, level: int) -> float:
+        if bid:
+            if level == 1:
+                return self.bid_price_1_tick[vt_symbol]
+            elif level == 2:
+                return self.bid_price_2_tick[vt_symbol]
+            elif level == 3:
+                return self.bid_price_3_tick[vt_symbol]
+            elif level == 4:
+                return self.bid_price_4_tick[vt_symbol]
+            elif level == 5:
+                return self.bid_price_5_tick[vt_symbol]
+        else:
+            if level == 1:
+                return self.ask_price_1_tick[vt_symbol]
+            elif level == 2:
+                return self.ask_price_2_tick[vt_symbol]
+            elif level == 3:
+                return self.ask_price_3_tick[vt_symbol]
+            elif level == 4:
+                return self.ask_price_4_tick[vt_symbol]
+            elif level == 5:
+                return self.ask_price_5_tick[vt_symbol]
+        return 0
 
     def get_order(self, vt_orderid: str) -> Optional[OrderData]:
         """查询委托数据"""

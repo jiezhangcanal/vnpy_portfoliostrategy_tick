@@ -1,10 +1,12 @@
 from collections import defaultdict
 from datetime import date, datetime, timedelta
+import tzlocal
 from typing import Dict, List, Set, Tuple, Optional
 from functools import lru_cache, partial
 from copy import copy
 import traceback
-
+from vnpy.trader.setting import SETTINGS
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -13,7 +15,7 @@ from pandas import DataFrame
 from vnpy.trader.constant import Direction, Offset, Interval, Status
 from vnpy.trader.database import get_database, BaseDatabase
 from vnpy.trader.object import OrderData, TradeData, BarData, TickData
-from vnpy.trader.utility import round_to, extract_vt_symbol
+from vnpy.trader.utility import round_to, extract_vt_symbol, generate_vt_symbol, ZoneInfo
 from .utility import PortfolioBarGenerator
 from vnpy.trader.optimize import (
     OptimizationSetting,
@@ -251,6 +253,146 @@ class BacktestingEngine:
                     end += (progress_delta + interval_delta)
                 self.output(f"{vt_symbol}历史tick数据加载完成，数据量：{data_count}")
         self.output("所有历史数据加载完成")
+    
+    def load_bar_data_internal(self, vt_symbol: str, progress_delta: timedelta, total_delta: timedelta, interval_delta: timedelta, timezone: ZoneInfo) -> None:
+        try:
+            if self.interval == Interval.MINUTE:
+                start: datetime = self.start
+                end: datetime = self.start + progress_delta
+                progress = 0
+
+                data_count = 0
+                while start < self.end:
+                    end = min(end, self.end)
+                    data: List[BarData] = load_bar_data(
+                        vt_symbol,
+                        self.interval,
+                        start,
+                        end
+                    )
+
+                    for bar in data:
+                        bar.datetime = bar.datetime.astimezone(timezone)
+                        self.dts.add(bar.datetime)
+                        self.history_data[(bar.datetime, vt_symbol)] = bar
+                        data_count += 1
+
+                    progress += progress_delta / total_delta
+                    progress = min(progress, 1)
+                    progress_bar = "#" * int(progress * 10)
+                    self.output(f"{vt_symbol}加载bar进度：{progress_bar} [{progress:.0%}]")
+
+                    start = end + interval_delta
+                    end += (progress_delta + interval_delta)
+            else:
+                data: List[BarData] = load_bar_data(
+                    vt_symbol,
+                    self.interval,
+                    self.start,
+                    self.end
+                )
+
+                for bar in data:
+                    bar.datetime = bar.datetime.astimezone(timezone)
+                    self.dts.add(bar.datetime)
+                    self.history_data[(bar.datetime, vt_symbol)] = bar
+
+                data_count = len(data)
+
+            self.output(f"{vt_symbol}历史bar数据加载完成，数据量：{data_count}")
+        except Exception as e:
+            self.output(f"{vt_symbol}历史bar数据加载失败，错误信息：{traceback.format_exc()}")
+    
+    
+    def load_tick_data_internal(self, vt_symbol: str, progress_delta: timedelta, total_delta: timedelta, interval_delta: timedelta, timezone: ZoneInfo) -> None:
+        try:
+            vt_symbol_tick = self.vt_symbols_bar_tick[vt_symbol]
+            start: datetime = self.start
+            end: datetime = self.start + progress_delta
+            progress = 0
+
+            data_count = 0
+            while start < self.end:
+                end = min(end, self.end)
+                data: List[TickData] = load_tick_data(
+                    vt_symbol_tick,
+                    start,
+                    end
+                )
+
+                for tick in data:
+                    tick.datetime = tick.datetime.astimezone(timezone)
+                    self.dts_tick.add(tick.datetime)
+                    self.history_data_tick[(tick.datetime, vt_symbol)] = tick
+                    data_count += 1
+
+                progress += progress_delta / total_delta
+                progress = min(progress, 1)
+                progress_bar = "#" * int(progress * 10)
+                self.output(f"{vt_symbol}加载tick进度：{progress_bar} [{progress:.0%}]")
+
+                start = end + interval_delta
+                end += (progress_delta + interval_delta)
+            self.output(f"{vt_symbol}历史tick数据加载完成，数据量：{data_count}")
+        except Exception as e:
+            self.output(f"{vt_symbol}历史tick数据加载失败，错误信息：{traceback.format_exc()}")
+    
+    def load_tick_data_dolphindb(self, timezone: ZoneInfo) -> None:
+        try:
+            exchages = {}
+            for vt_symbol in self.vt_symbols:
+                symbol, exchange = extract_vt_symbol(vt_symbol)
+                if exchages.get(exchange, None) is None:
+                    exchages[exchange] = [symbol.replace('8888', '9999')]
+                else:
+                    exchages[exchange].append(symbol.replace('8888', '9999'))
+            
+            database: BaseDatabase = get_database()
+            for ex in exchages:
+                symbol = ','.join(exchages.get(ex))
+                data: List[TickData] = database.load_tick_data(symbol, ex, self.start, self.end)
+                print(data.__len__())
+                data_count = 0
+                for tick in data:
+                    tick.datetime = tick.datetime.astimezone(timezone)
+                    self.dts_tick.add(tick.datetime)
+
+                    self.history_data_tick[(tick.datetime, self.vt_symbols_tick_bar[generate_vt_symbol(tick.symbol,ex)])] = tick
+                    data_count += 1
+                self.output(f"{ex.value}历史tick数据加载完成，数据量：{data_count}")
+            self.output(f"历史tick数据(dolphine)加载完成")
+        except Exception as e:
+            self.output(f"历史tick数据(dolphine)加载失败，错误信息：{traceback.format_exc()}")
+
+    def load_data_dolphindb(self, timezone: ZoneInfo=tzlocal.get_localzone()) -> None:
+        """加载历史数据"""
+        self.output("开始加载历史数据")
+
+        if not self.end:
+            self.end = datetime.now()
+
+        if self.start >= self.end:
+            self.output("起始日期必须小于结束日期")
+            return
+
+        # 清理上次加载的历史数据
+        self.history_data.clear()
+        self.dts.clear()
+        self.history_data_tick.clear()
+        self.dts_tick.clear()
+
+        # 每次加载30天历史数据
+        progress_delta: timedelta = timedelta(days=30)
+        total_delta: timedelta = self.end - self.start
+        interval_delta: timedelta = INTERVAL_DELTA_MAP[self.interval]
+        for vt_symbol in self.vt_symbols:
+            self.load_bar_data_internal(vt_symbol, progress_delta, total_delta, interval_delta, timezone)
+        
+        if self.mode == BacktestingMode.TICK:
+            for vt_symbol in self.vt_symbols:
+                self.load_tick_data_internal(vt_symbol, progress_delta, total_delta, interval_delta, timezone)
+
+        self.output("所有历史数据加载完成")
 
     def run_backtesting(self) -> None:
         """开始回测"""
@@ -270,9 +412,8 @@ class BacktestingEngine:
             for ix, dt in enumerate(dts):
                 if self.datetime and dt.day != self.datetime.day:
                     day_count += 1
-                    if day_count >= self.days:
-                        break
-
+                if day_count >= self.days:
+                    break
                 try:
                     self.new_bars(dt)
                 except Exception:
@@ -285,8 +426,8 @@ class BacktestingEngine:
                 dt_tick = dts_tick[ix_tick]
                 if self.datetime and dt.day != self.datetime.day:
                     day_count += 1
-                    if day_count >= self.days:
-                        break
+                if day_count >= self.days:
+                    break
                 if dt.timestamp() <= dt_tick.timestamp():
                     self.new_bars(dt)
                     ix += 1
@@ -301,6 +442,7 @@ class BacktestingEngine:
         self.strategy.on_start()
         self.strategy.trading = True
         self.output("开始回放历史数据")
+        self.output(f"ix:{ix}, ix_tick:{ix_tick}")
         # 使用剩余历史数据进行策略回测
         if self.mode == BacktestingMode.BAR:
             for dt in dts[ix:]:
@@ -1152,7 +1294,7 @@ class PortfolioDailyResult:
                 self.contract_results[vt_symbol] = ContractDailyResult(self.date, close_price)
 
 
-@lru_cache(maxsize=999)
+# @lru_cache(maxsize=999)
 def load_bar_data(
     vt_symbol: str,
     interval: Interval,
@@ -1168,7 +1310,7 @@ def load_bar_data(
         symbol, exchange, interval, start, end
     )
 
-@lru_cache(maxsize=999)
+# @lru_cache(maxsize=999)
 def load_tick_data(
     vt_symbol: str,
     start: datetime,

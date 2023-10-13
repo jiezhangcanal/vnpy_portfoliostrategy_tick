@@ -32,7 +32,7 @@ from .base import APP_NAME
 from .engine import StrategyEngine
 from .template import StrategyTemplate
 from .backtesting import BacktestingEngine
-
+from .base import Interval
 
 class PortfolioStrategyApp(BaseApp):
     """"""
@@ -44,3 +44,7 @@ class PortfolioStrategyApp(BaseApp):
     engine_class: StrategyEngine = StrategyEngine
     widget_name: str = "PortfolioStrategyManager"
     icon_name: str = str(app_path.joinpath("ui", "strategy.ico"))
+
+def init() -> None:
+    import vnpy.trader.constant
+    vnpy.trader.constant.Interval = Interval

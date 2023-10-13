@@ -31,3 +31,11 @@ pip install vnpy_portfoliostrategy
 ```
 pip install .
 ```
+
+
+生成的whl文件在dist目录下，使用pip命令安装：
+
+
+```
+python setup.py bdist_wheel
+```

@@ -1,5 +1,5 @@
 from collections import defaultdict
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 import tzlocal
 from typing import Dict, List, Set, Tuple, Optional
 from functools import lru_cache, partial
@@ -24,11 +24,12 @@ from vnpy.trader.optimize import (
     run_ga_optimization
 )
 
-from .base import EngineType, BacktestingMode
+from .base import EngineType, BacktestingMode, Interval
 from .template import StrategyTemplate
 
 
 INTERVAL_DELTA_MAP: Dict[Interval, timedelta] = {
+    Interval.SECOND: timedelta(seconds=1),
     Interval.MINUTE: timedelta(minutes=1),
     Interval.HOUR: timedelta(hours=1),
     Interval.DAILY: timedelta(days=1),
@@ -57,6 +58,7 @@ class BacktestingEngine:
         self.capital: float = 1_000_000
         self.risk_free: float = 0
         self.mode : BacktestingMode = BacktestingMode.BAR
+        self.tick_last_price_touch: bool = True
 
         self.strategy_class: StrategyTemplate = None
         self.strategy: StrategyTemplate = None
@@ -127,16 +129,24 @@ class BacktestingEngine:
         capital: int = 0,
         end: datetime = None,
         risk_free: float = 0,
-        mode: BacktestingMode = BacktestingMode.BAR
+        mode: BacktestingMode = BacktestingMode.BAR,
+        jq: bool = False
     ) -> None:
         """设置参数"""
         self.mode = mode
         self.vt_symbols = vt_symbols
-        for vt_symbol in self.vt_symbols:
-            symbol, exchange = extract_vt_symbol(vt_symbol)
-            vt_symbol_tick = symbol[:-4] + "9999." + exchange.value
-            self.vt_symbols_bar_tick[vt_symbol] = vt_symbol_tick
-            self.vt_symbols_tick_bar[vt_symbol_tick] = vt_symbol
+        if jq:
+            for vt_symbol in self.vt_symbols:
+                symbol, exchange = extract_vt_symbol(vt_symbol)
+                vt_symbol_tick = symbol[:-7] + "9999." + exchange.value
+                self.vt_symbols_bar_tick[vt_symbol] = vt_symbol_tick
+                self.vt_symbols_tick_bar[vt_symbol_tick] = vt_symbol
+        else:
+            for vt_symbol in self.vt_symbols:
+                symbol, exchange = extract_vt_symbol(vt_symbol)
+                vt_symbol_tick = symbol[:-4] + "9999." + exchange.value
+                self.vt_symbols_bar_tick[vt_symbol] = vt_symbol_tick
+                self.vt_symbols_tick_bar[vt_symbol_tick] = vt_symbol
 
         self.interval = interval
 
@@ -337,32 +347,32 @@ class BacktestingEngine:
         except Exception as e:
             self.output(f"{vt_symbol}历史tick数据加载失败，错误信息：{traceback.format_exc()}")
     
-    def load_tick_data_dolphindb(self, timezone: ZoneInfo) -> None:
-        try:
-            exchages = {}
-            for vt_symbol in self.vt_symbols:
-                symbol, exchange = extract_vt_symbol(vt_symbol)
-                if exchages.get(exchange, None) is None:
-                    exchages[exchange] = [symbol.replace('8888', '9999')]
-                else:
-                    exchages[exchange].append(symbol.replace('8888', '9999'))
+    # def load_tick_data_dolphindb(self, timezone: ZoneInfo) -> None:
+    #     try:
+    #         exchages = {}
+    #         for vt_symbol in self.vt_symbols:
+    #             symbol, exchange = extract_vt_symbol(vt_symbol)
+    #             if exchages.get(exchange, None) is None:
+    #                 exchages[exchange] = [symbol.replace('8888', '9999')]
+    #             else:
+    #                 exchages[exchange].append(symbol.replace('8888', '9999'))
             
-            database: BaseDatabase = get_database()
-            for ex in exchages:
-                symbol = ','.join(exchages.get(ex))
-                data: List[TickData] = database.load_tick_data(symbol, ex, self.start, self.end)
-                print(data.__len__())
-                data_count = 0
-                for tick in data:
-                    tick.datetime = tick.datetime.astimezone(timezone)
-                    self.dts_tick.add(tick.datetime)
+    #         database: BaseDatabase = get_database()
+    #         for ex in exchages:
+    #             symbol = ','.join(exchages.get(ex))
+    #             data: List[TickData] = database.load_tick_data(symbol, ex, self.start, self.end)
+    #             print(data.__len__())
+    #             data_count = 0
+    #             for tick in data:
+    #                 tick.datetime = tick.datetime.astimezone(timezone)
+    #                 self.dts_tick.add(tick.datetime)
 
-                    self.history_data_tick[(tick.datetime, self.vt_symbols_tick_bar[generate_vt_symbol(tick.symbol,ex)])] = tick
-                    data_count += 1
-                self.output(f"{ex.value}历史tick数据加载完成，数据量：{data_count}")
-            self.output(f"历史tick数据(dolphine)加载完成")
-        except Exception as e:
-            self.output(f"历史tick数据(dolphine)加载失败，错误信息：{traceback.format_exc()}")
+    #                 self.history_data_tick[(tick.datetime, self.vt_symbols_tick_bar[generate_vt_symbol(tick.symbol,ex)])] = tick
+    #                 data_count += 1
+    #             self.output(f"{ex.value}历史tick数据加载完成，数据量：{data_count}")
+    #         self.output(f"历史tick数据(dolphine)加载完成")
+    #     except Exception as e:
+    #         self.output(f"历史tick数据(dolphine)加载失败，错误信息：{traceback.format_exc()}")
 
     def load_data_dolphindb(self, timezone: ZoneInfo=tzlocal.get_localzone()) -> None:
         """加载历史数据"""
@@ -387,8 +397,8 @@ class BacktestingEngine:
         interval_delta: timedelta = INTERVAL_DELTA_MAP[self.interval]
         for vt_symbol in self.vt_symbols:
             self.load_bar_data_internal(vt_symbol, progress_delta, total_delta, interval_delta, timezone)
-        
-        if self.mode == BacktestingMode.TICK:
+    
+        if self.mode != BacktestingMode.BAR:
             for vt_symbol in self.vt_symbols:
                 self.load_tick_data_internal(vt_symbol, progress_delta, total_delta, interval_delta, timezone)
 
@@ -507,7 +517,7 @@ class BacktestingEngine:
             fields: list = [
                 "date", "trade_count", "turnover",
                 "commission", "slippage", "trading_pnl",
-                "holding_pnl", "total_pnl", "net_pnl"
+                "holding_pnl", "total_pnl", "net_pnl", "close_59", "close_other"
             ]
             for key in fields:
                 value = getattr(daily_result, key)
@@ -551,6 +561,8 @@ class BacktestingEngine:
         return_std: float = 0
         sharpe_ratio: float = 0
         return_drawdown_ratio: float = 0
+        close_59: int = 0
+        close_other: int = 0
 
         # 检查是否发生过爆仓
         positive_balance: bool = False
@@ -608,6 +620,9 @@ class BacktestingEngine:
             daily_return: float = df["return"].mean() * 100
             return_std: float = df["return"].std() * 100
 
+            close_59: int = df["close_59"].sum()
+            close_other: int = df["close_other"].sum()
+
             if return_std:
                 daily_risk_free: float = self.risk_free / np.sqrt(240)
                 sharpe_ratio: float = (daily_return - daily_risk_free) / return_std * np.sqrt(240)
@@ -646,6 +661,9 @@ class BacktestingEngine:
             self.output(f"日均滑点：\t{daily_slippage:,.2f}")
             self.output(f"日均成交金额：\t{daily_turnover:,.2f}")
             self.output(f"日均成交笔数：\t{daily_trade_count}")
+
+            self.output(f"59分关仓笔数：\t{close_59}")
+            self.output(f"其他时间关仓笔数：\t{close_other}")
 
             self.output(f"日均收益率：\t{daily_return:,.2f}%")
             self.output(f"收益标准差：\t{return_std:,.2f}%")
@@ -876,31 +894,46 @@ class BacktestingEngine:
                 short_cross_price: float = bar.high_price
                 long_best_price: float = bar.open_price
                 short_best_price: float = bar.open_price
+                # 检查可以被撮合的限价委托
+                long_cross: bool = (
+                    order.direction == Direction.LONG
+                    and order.price > long_cross_price
+                    and long_cross_price > 0
+                )
+
+                short_cross: bool = (
+                    order.direction == Direction.SHORT
+                    and order.price < short_cross_price
+                    and short_cross_price > 0
+                )
             else:
                 tick: TickData = self.ticks[order.vt_symbol]
+                if order.datetime.timestamp() + 0.5 > tick.datetime.timestamp():
+                    # print(tick)
+                    continue
+                if self.tick_last_price_touch:
+                    long_cross_price: float = tick.last_price
+                    short_cross_price: float = tick.last_price
+                else:
+                    long_cross_price: float = tick.bid_price_1
+                    short_cross_price: float = tick.ask_price_1
+                # 检查可以被撮合的限价委托x
+                long_cross: bool = (
+                    order.direction == Direction.LONG
+                    and order.price >= long_cross_price
+                    and long_cross_price > 0
+                )
 
-                long_cross_price: float = tick.ask_price_1
-                short_cross_price: float = tick.bid_price_1
-                long_best_price: float = tick.ask_price_1
-                short_best_price: float = tick.bid_price_1
+                short_cross: bool = (
+                    order.direction == Direction.SHORT
+                    and order.price <= short_cross_price
+                    and short_cross_price > 0
+                )
 
             # 推送委托未成交状态更新
             if order.status == Status.SUBMITTING:
                 order.status = Status.NOTTRADED
                 self.strategy.update_order(order)
-
-            # 检查可以被撮合的限价委托
-            long_cross: bool = (
-                order.direction == Direction.LONG
-                and order.price >= long_cross_price
-                and long_cross_price > 0
-            )
-
-            short_cross: bool = (
-                order.direction == Direction.SHORT
-                and order.price <= short_cross_price
-                and short_cross_price > 0
-            )
 
             if not long_cross and not short_cross:
                 continue
@@ -916,10 +949,10 @@ class BacktestingEngine:
             # 推送成交信息
             self.trade_count += 1
 
-            if long_cross:
-                trade_price = min(order.price, long_best_price)
-            else:
-                trade_price = max(order.price, short_best_price)
+            # if long_cross:
+            #     trade_price = min(order.price, long_best_price)
+            # else:
+            #     trade_price = max(order.price, short_best_price)
 
             trade: TradeData = TradeData(
                 symbol=order.symbol,
@@ -928,7 +961,7 @@ class BacktestingEngine:
                 tradeid=str(self.trade_count),
                 direction=order.direction,
                 offset=order.offset,
-                price=trade_price,
+                price=order.price,
                 volume=order.volume,
                 datetime=self.datetime,
                 gateway_name=self.gateway_name,
@@ -1157,6 +1190,8 @@ class ContractDailyResult:
 
         self.trades: List[TradeData] = []
         self.trade_count: int = 0
+        self.close_59: int = 0
+        self.close_other: int = 0
 
         self.start_pos: float = 0
         self.end_pos: float = 0
@@ -1211,6 +1246,16 @@ class ContractDailyResult:
             self.slippage += trade.volume * size * slippage
             self.turnover += turnover
             self.commission += turnover * rate
+            if trade.direction == Direction.SHORT and trade.offset == Offset.CLOSE:
+                if trade.datetime.minute == 59:
+                    dt = trade.datetime
+                    dt = dt.astimezone(timezone(timedelta(hours=+8)))
+                    if dt.hour == 14:
+                        self.close_59 += 1
+                    else:
+                        self.close_other += 1
+                else:
+                    self.close_other += 1
 
         # 计算每日盈亏
         self.total_pnl = self.trading_pnl + self.holding_pnl
@@ -1245,6 +1290,8 @@ class PortfolioDailyResult:
         self.holding_pnl: float = 0
         self.total_pnl: float = 0
         self.net_pnl: float = 0
+        self.close_59: int = 0
+        self.close_other: int = 0
 
     def add_trade(self, trade: TradeData) -> None:
         """添加成交信息"""
@@ -1281,6 +1328,8 @@ class PortfolioDailyResult:
             self.net_pnl += contract_result.net_pnl
 
             self.end_poses[vt_symbol] = contract_result.end_pos
+            self.close_59 += contract_result.close_59
+            self.close_other += contract_result.close_other
 
     def update_close_prices(self, close_prices: Dict[str, float]) -> None:
         """更新每日收盘价"""

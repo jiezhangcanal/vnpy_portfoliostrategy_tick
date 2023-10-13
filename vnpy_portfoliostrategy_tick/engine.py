@@ -162,7 +162,6 @@ class StrategyEngine(BaseEngine):
         volume: float,
         lock: bool,
         net: bool,
-        limit: bool = True,
     ) -> list:
         """发送委托"""
         contract: Optional[ContractData] = self.main_engine.get_contract(vt_symbol)

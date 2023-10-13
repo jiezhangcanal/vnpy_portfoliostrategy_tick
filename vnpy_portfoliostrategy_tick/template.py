@@ -19,7 +19,7 @@ class StrategyTemplate(ABC):
     author: str = ""
     parameters: list = []
     variables: list = []
-    settings: list = ['limit', 'mode', 'limit_type']
+    settings: list = ['limit', 'mode', 'limit_type', 'jq']
 
     def __init__(
         self,
@@ -39,6 +39,7 @@ class StrategyTemplate(ABC):
         self.limit: bool = True
         self.limit_type : LimitType = LimitType.LAST
         self.mode: BacktestingMode = BacktestingMode.BAR
+        self.jq: bool = False
         self.close_price_tick = {}
         self.bid_price_1_tick = {}
         self.ask_price_1_tick = {}
@@ -54,6 +55,7 @@ class StrategyTemplate(ABC):
         # 持仓数据字典
         self.pos_data: Dict[str, int] = defaultdict(int)        # 实际持仓
         self.target_data: Dict[str, int] = defaultdict(int)     # 目标持仓
+        self.last_target_data: Dict[str, int] = defaultdict(int)     # 上一次记录的目标持仓
 
         # 委托缓存容器
         self.orders: Dict[str, OrderData] = {}
@@ -65,6 +67,7 @@ class StrategyTemplate(ABC):
         self.variables.insert(1, "trading")
         self.variables.insert(2, "pos_data")
         self.variables.insert(3, "target_data")
+        self.variables.insert(4, "last_target_data")
 
         # 设置策略参数
         self.update_setting(setting)
@@ -167,21 +170,21 @@ class StrategyTemplate(ABC):
         if not order.is_active() and order.vt_orderid in self.active_orderids:
             self.active_orderids.remove(order.vt_orderid)
 
-    def buy(self, vt_symbol: str, price: float, volume: float, lock: bool = False, net: bool = False) -> List[str]:
+    def buy(self, vt_symbol: str, price: float, volume: float, lock: bool = False, net: bool = False, limit: bool = None) -> List[str]:
         """买入开仓"""
-        return self.send_order(vt_symbol, Direction.LONG, Offset.OPEN, price, volume, lock, net)
+        return self.send_order(vt_symbol, Direction.LONG, Offset.OPEN, price, volume, lock, net, limit)
 
-    def sell(self, vt_symbol: str, price: float, volume: float, lock: bool = False, net: bool = False) -> List[str]:
+    def sell(self, vt_symbol: str, price: float, volume: float, lock: bool = False, net: bool = False, limit: bool = None) -> List[str]:
         """卖出平仓"""
-        return self.send_order(vt_symbol, Direction.SHORT, Offset.CLOSE, price, volume, lock, net)
+        return self.send_order(vt_symbol, Direction.SHORT, Offset.CLOSE, price, volume, lock, net, limit)
 
-    def short(self, vt_symbol: str, price: float, volume: float, lock: bool = False, net: bool = False) -> List[str]:
+    def short(self, vt_symbol: str, price: float, volume: float, lock: bool = False, net: bool = False, limit: bool = None) -> List[str]:
         """卖出开仓"""
-        return self.send_order(vt_symbol, Direction.SHORT, Offset.OPEN, price, volume, lock, net)
+        return self.send_order(vt_symbol, Direction.SHORT, Offset.OPEN, price, volume, lock, net, limit)
 
-    def cover(self, vt_symbol: str, price: float, volume: float, lock: bool = False, net: bool = False) -> List[str]:
+    def cover(self, vt_symbol: str, price: float, volume: float, lock: bool = False, net: bool = False, limit: bool = None) -> List[str]:
         """买入平仓"""
-        return self.send_order(vt_symbol, Direction.LONG, Offset.CLOSE, price, volume, lock, net)
+        return self.send_order(vt_symbol, Direction.LONG, Offset.CLOSE, price, volume, lock, net, limit)
 
     def send_order(
         self,
@@ -192,11 +195,14 @@ class StrategyTemplate(ABC):
         volume: float,
         lock: bool = False,
         net: bool = False,
+        limit: bool = None,
     ) -> List[str]:
         """发送委托"""
+        if limit is None:
+            limit = self.limit
         if self.trading:
             vt_orderids: list = self.strategy_engine.send_order(
-                self, vt_symbol, direction, offset, price, volume, lock, net, self.limit
+                self, vt_symbol, direction, offset, price, volume, lock, net, limit
             )
 
             for vt_orderid in vt_orderids:
@@ -227,10 +233,69 @@ class StrategyTemplate(ABC):
     def set_target(self, vt_symbol: str, target: int) -> None:
         """设置目标仓位"""
         self.target_data[vt_symbol] = target
+    
+    def get_last_target(self, vt_symbol: str) -> int:
+        """查询上一次目标仓位"""
+        return self.last_target_data[vt_symbol]
+    
+    def set_last_target(self, vt_symbol: str, target: int) -> None:
+        """设置上一次目标仓位"""
+        self.last_target_data[vt_symbol] = target
+    
+    def close_market(self) -> None:
+        self.cancel_all()
 
-    def rebalance_portfolio(self, bars: Dict[str, BarData]) -> None:
+        for vt_symbol in self.vt_symbols:
+            target: int = self.get_target(vt_symbol)
+            pos: int = self.get_pos(vt_symbol)
+            diff: int = target - pos
+            if diff > 0:
+                # 计算买平和买开数量
+                cover_volume: int = 0
+                buy_volume: int = 0
+
+                if pos < 0:
+                    cover_volume = min(diff, abs(pos))
+                    buy_volume = diff - cover_volume
+                else:
+                    buy_volume = diff
+
+                # 发出对应委托
+                if cover_volume:
+                    self.cover(vt_symbol, 0, cover_volume, False)
+
+                if buy_volume:
+                    self.buy(vt_symbol, 0, buy_volume, False)
+            # 空头
+            elif diff < 0:
+                # 计算卖平和卖开数量
+                sell_volume: int = 0
+                short_volume: int = 0
+
+                if pos > 0:
+                    sell_volume = min(abs(diff), pos)
+                    short_volume = abs(diff) - sell_volume
+                else:
+                    short_volume = abs(diff)
+
+                # 发出对应委托
+                if sell_volume:
+                    self.sell(vt_symbol, 0, sell_volume, False)
+
+                if short_volume:
+                    self.short(vt_symbol, 0, short_volume, False)
+
+    def rebalance_portfolio(self, bars: Dict[str, BarData], limit: bool = None, limit_type: LimitType = None) -> None:
         """基于目标执行调仓交易"""
         self.cancel_all()
+        if limit is None:
+            limit = self.limit
+        if limit is None:
+            limit = True
+        if limit_type is None:
+            limit_type = self.limit_type
+        if limit_type is None:
+            limit_type = LimitType.LAST
 
         # 只发出当前K线切片有行情的合约的委托
         for vt_symbol, bar in bars.items():
@@ -245,7 +310,8 @@ class StrategyTemplate(ABC):
                 order_price: float = self.calculate_price(
                     vt_symbol,
                     Direction.LONG,
-                    bar.close_price
+                    bar.close_price,
+                    limit_type
                 )
 
                 # 计算买平和买开数量
@@ -260,17 +326,18 @@ class StrategyTemplate(ABC):
 
                 # 发出对应委托
                 if cover_volume:
-                    self.cover(vt_symbol, order_price, cover_volume)
+                    self.cover(vt_symbol, order_price, cover_volume, limit=limit)
 
                 if buy_volume:
-                    self.buy(vt_symbol, order_price, buy_volume)
+                    self.buy(vt_symbol, order_price, buy_volume, limit=limit)
             # 空头
             elif diff < 0:
                 # 计算空头委托价
                 order_price: float = self.calculate_price(
                     vt_symbol,
                     Direction.SHORT,
-                    bar.close_price
+                    bar.close_price,
+                    limit_type
                 )
 
                 # 计算卖平和卖开数量
@@ -285,48 +352,130 @@ class StrategyTemplate(ABC):
 
                 # 发出对应委托
                 if sell_volume:
-                    self.sell(vt_symbol, order_price, sell_volume)
+                    self.sell(vt_symbol, order_price, sell_volume, limit=limit)
 
                 if short_volume:
-                    self.short(vt_symbol, order_price, short_volume)
+                    self.short(vt_symbol, order_price, short_volume, limit=limit)
+    
+    def rebalance_portfolio_tick(self, limit: bool = None, limit_type: LimitType = None) -> None:
+        """基于目标执行调仓交易"""
+        if self.mode == BacktestingMode.BAR:
+            raise Exception("rebalance_portfolio_tick() cannot be called in BAR mode")
+        self.cancel_all()
+        if limit is None:
+            limit = self.limit
+        if limit is None:
+            limit = True
+        if limit_type is None:
+            limit_type = self.limit_type
+        if limit_type is None:
+            limit_type = LimitType.LAST
 
+        for vt_symbol in self.vt_symbols:
+            # 计算仓差
+            target: int = self.get_target(vt_symbol)
+            pos: int = self.get_pos(vt_symbol)
+            diff: int = target - pos
+
+            # 多头
+            if diff > 0:
+                # 计算多头委托价
+                if limit == False:
+                    order_price = 0
+                else:
+                    order_price: float = self.calculate_price(
+                        vt_symbol,
+                        Direction.LONG,
+                        0,
+                        limit_type
+                    )
+
+                # 计算买平和买开数量
+                cover_volume: int = 0
+                buy_volume: int = 0
+
+                if pos < 0:
+                    cover_volume = min(diff, abs(pos))
+                    buy_volume = diff - cover_volume
+                else:
+                    buy_volume = diff
+
+                # 发出对应委托
+                if cover_volume:
+                    self.cover(vt_symbol, order_price, cover_volume, limit=limit)
+
+                if buy_volume:
+                    self.buy(vt_symbol, order_price, buy_volume, limit=limit)
+            # 空头
+            elif diff < 0:
+                # 计算空头委托价
+                if limit == False:
+                    order_price = 0
+                else:
+                    order_price: float = self.calculate_price(
+                        vt_symbol,
+                        Direction.SHORT,
+                        0,
+                        limit_type
+                    )
+
+                # 计算卖平和卖开数量
+                sell_volume: int = 0
+                short_volume: int = 0
+
+                if pos > 0:
+                    sell_volume = min(abs(diff), pos)
+                    short_volume = abs(diff) - sell_volume
+                else:
+                    short_volume = abs(diff)
+
+                # 发出对应委托
+                if sell_volume:
+                    self.sell(vt_symbol, order_price, sell_volume, limit=limit)
+
+                if short_volume:
+                    self.short(vt_symbol, order_price, short_volume, limit=limit)
+    
     @virtual
     def calculate_price(
         self,
         vt_symbol: str,
         direction: Direction,
-        reference: float
+        reference: float,
+        limit_type: LimitType
     ) -> float:
         """计算调仓委托价格（支持按需重载实现）"""
-        print(f"calculate_price:{self.mode}")
         if self.mode == BacktestingMode.BAR:
             return reference
         else:
-            vt_symbol = vt_symbol.replace("8888", "9999")
-            if self.limit_type == LimitType.LAST:
+            if self.jq:
+                vt_symbol = vt_symbol.replace('9999_JQ','9999')
+            else:
+                vt_symbol = vt_symbol.replace('8888','9999')
+            if limit_type == LimitType.LAST:
                 return self.close_price_tick[vt_symbol]
             else:
-                if self.limit_type == LimitType.BIDASK1:
+                if limit_type == LimitType.BIDASK1:
                     if direction == Direction.LONG:
                         return self.bid_price_1_tick[vt_symbol]
                     else:
                         return self.ask_price_1_tick[vt_symbol]
-                elif self.limit_type == LimitType.BIDASK2:
+                elif limit_type == LimitType.BIDASK2:
                     if direction == Direction.LONG:
                         return self.get_bid_price_tick(vt_symbol, 2)
                     else:
                         return self.get_ask_price_tick(vt_symbol, 2)
-                elif self.limit_type == LimitType.BIDASK3:
+                elif limit_type == LimitType.BIDASK3:
                     if direction == Direction.LONG:
                         return self.get_bid_price_tick(vt_symbol, 3)
                     else:
                         return self.get_ask_price_tick(vt_symbol, 3)
-                elif self.limit_type == LimitType.BIDASK4:
+                elif limit_type == LimitType.BIDASK4:
                     if direction == Direction.LONG:
                         return self.get_bid_price_tick(vt_symbol, 4)
                     else:
                         return self.get_ask_price_tick(vt_symbol, 4)
-                elif self.limit_type == LimitType.BIDASK5:
+                elif limit_type == LimitType.BIDASK5:
                     if direction == Direction.LONG:
                         return self.get_bid_price_tick(vt_symbol, 5)
                     else:
@@ -336,12 +485,16 @@ class StrategyTemplate(ABC):
         price = self.get_original_bid_ask_price_tick(True, vt_symbol, level)
         if price is not None and price > 0:
             return price
-        step = max(self.get_pricetick(vt_symbol.replace("9999", "8888")), (self.ask_price_1_tick[vt_symbol] - self.bid_price_1_tick[vt_symbol])/2)
+        if self.jq:
+            price_tick = self.get_pricetick(vt_symbol.replace("9999", "9999_JQ"))
+        else:
+            price_tick = self.get_pricetick(vt_symbol.replace("9999", "8888"))
+        step = max(price_tick, (self.ask_price_1_tick[vt_symbol] - self.bid_price_1_tick[vt_symbol])/2)
         step_count = 1
         level -= 1
         while level > 1:
             price = self.get_original_bid_ask_price_tick(True, vt_symbol, level)
-            if price is not None and price > 0:
+            if price is None or price == 0:
                 level -= 1
                 step_count += 1
             else:
@@ -352,12 +505,16 @@ class StrategyTemplate(ABC):
         price = self.get_original_bid_ask_price_tick(False, vt_symbol, level)
         if price is not None and price > 0:
             return price
-        step = max(self.get_pricetick(vt_symbol.replace("9999", "8888")), (self.ask_price_1_tick[vt_symbol] - self.bid_price_1_tick[vt_symbol])/2)
+        if self.jq:
+            price_tick = self.get_pricetick(vt_symbol.replace("9999", "9999_JQ"))
+        else:
+            price_tick = self.get_pricetick(vt_symbol.replace("9999", "8888"))
+        step = max(price_tick, (self.ask_price_1_tick[vt_symbol] - self.bid_price_1_tick[vt_symbol])/2)
         step_count = 1
         level -= 1
         while level > 1:
             price = self.get_original_bid_ask_price_tick(False, vt_symbol, level)
-            if price is not None and price > 0:
+            if price is None or price == 0:
                 level -= 1
                 step_count += 1
             else:

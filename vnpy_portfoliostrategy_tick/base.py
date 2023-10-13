@@ -1,5 +1,5 @@
 from enum import Enum
-
+from vnpy.trader.constant import Interval
 
 APP_NAME = "PortfolioStrategy"
 
@@ -22,3 +22,10 @@ class LimitType(Enum):
 
 EVENT_PORTFOLIO_LOG = "ePortfolioLog"
 EVENT_PORTFOLIO_STRATEGY = "ePortfolioStrategy"
+
+
+members = []
+for name, member in Interval.__members__.items():
+    members.append((name, member.value))
+members.append(("SECOND", '1s'))
+Interval =Enum("Interval", members)
